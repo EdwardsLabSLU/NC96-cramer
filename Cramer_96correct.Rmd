@@ -1,0 +1,126 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r Setup}
+library(tidyverse)
+library(readxl)
+```
+
+```{r Create cramer function}
+CR <- function(Ab){
+  
+  A <- Ab$A
+  b <- Ab$b
+  
+  # input values A and b dimension checking
+  if (!((dim(A)[1] == dim(A)[2]) && dim(A)[1] == length(b))) {
+    stop("Input value dimension error.")
+  }
+  
+  n <- length(b)
+  
+  Ai <- list()
+  
+  for (i in 1:n) {
+    A_i <- A
+    A_i[, i] <- b
+    Ai[[paste0("A", i)]] <- A_i
+  }
+  
+  x <- list()
+  
+  for (i in 1:n) {
+    x[[paste0("x", i)]] <- det(Ai[[paste0("A", i)]]) / det_A
+  }
+  
+  return(x)
+}
+
+```
+
+```{r Import data}
+pmat_long <- read_csv("iso_purity_corrections/pmat_long_032023.csv") ## Purity matrix in tidy format
+cList <- read_excel("iso_purity_corrections/analyte_c_list.xlsx") ## Analyte carbon number
+
+# Positions where naturally occurring 13C overlap
+# 1000 indicates positive spill from another lane 
+# -1000 indicates lost signal from naturally occurring 13C
+cMat_locations <- read_csv("iso_purity_corrections/cMat_locations.csv") 
+
+maxes <- read_csv("no_corr_data/tResults_nDep_031923.csv")
+```
+
+```{r}
+final_corr_results <- data.frame()
+
+base_list <- read_excel("iso_purity_corrections/base_list.xlsx")
+
+for (n in 1:nrow(analyte_c_list)) {
+  
+  c_number <- as.numeric(analyte_c_list[n,2]) 
+  pct_c <- c_number*0.01109 
+  
+  if (analyte_c_list[n,3] != 1) { ## If double tagged, set percent C spillover to 0
+    pct_c <- 0
+    }
+  
+  cMat_locations[cMat_locations == -1000] <- -pct_c
+  cMat_locations[cMat_locations == 1000] <- pct_c
+  
+  C13mat <- cMat_locations %>% 
+    as.matrix()
+  
+  temp_pmat1 <- pmat_long %>% 
+    left_join(cMat_locations, by = join_by(order_number, imp))
+  
+  temp_pmat1[is.na(temp_pmat1)] <- 0
+  
+  temp_pmat2 <- temp_pmat1 %>% 
+    mutate(Intensity = Intensity+change) %>% 
+    select(-change)
+  
+  pmat <- base_list
+  
+  for(i in 1:96) {
+    pmat[i+1] <- temp_pmat2 %>% 
+      filter(order_number == i) %>% 
+      select(imp, Intensity) %>% 
+      rename(rank = imp) %>% 
+      right_join(base_list) %>% 
+      arrange(rank) %>% 
+      select(2)
+} 
+
+  colnames(pmat) <- c(paste0("c", 0:96), "label")
+  
+  f_pmat <- pmat %>% 
+    select(-c0)
+  
+  A <- as.matrix(f_pmat)
+
+  int_matrix <- maxes %>% 
+    ungroup() %>% 
+    filter(Analyte == as.character(analyte_c_list[n,1])) %>% 
+    arrange(mz) %>% 
+    select(Area) %>% 
+    as.matrix()
+  
+  b <- int_matrix
+  
+  det_A <- det(A) 
+  
+  corr_vals <- CR(list(A = A, b = b)) # A is purity matrix, b = observed value vector
+  
+  corr_data <- rbind.data.frame(corr_vals) %>% pivot_longer(cols = 1:length(corr_vals)) %>% 
+  select(value) %>% 
+  rename(corrint = value)
+  
+  corr_results <- cbind(base_list,corr_data)
+  corr_results$analytes <- as.character(analyte_c_list[n,1])
+  
+  final_corr_results <- rbind(final_corr_results, corr_results)
+}
+
+```
+
